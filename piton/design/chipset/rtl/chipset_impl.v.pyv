@@ -1121,8 +1121,8 @@ dummy_uart dummy_uart (
     .rst_n(chipset_rst_n),
     .src_uart_noc2_val(buf_dummy_uart_noc2_valid),
     .src_uart_noc2_data(buf_dummy_uart_noc2_data),
-    .src_uart_noc2_rdy(dummy_uart_buf_noc2_rdy),
-    .uart_dst_noc3_val(dummy_uart_buf_noc3_val),
+    .src_uart_noc2_rdy(dummy_uart_buf_noc2_ready),
+    .uart_dst_noc3_val(dummy_uart_buf_noc3_valid),
     .uart_dst_noc3_data(dummy_uart_buf_noc3_data),
     .uart_dst_noc3_rdy(buf_dummy_uart_noc3_ready)
 );
