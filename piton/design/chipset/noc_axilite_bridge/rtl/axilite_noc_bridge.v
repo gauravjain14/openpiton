@@ -1,6 +1,8 @@
 `include "define.tmp.h"
 
-module axilite_noc_bridge (
+module axilite_noc_bridge #(
+    parameter AXI_LITE_DATA_WIDTH = 512
+) (
     input  wire                                   clk,
     input  wire                                   rst,
 
@@ -36,8 +38,8 @@ module axilite_noc_bridge (
     output wire                                   m_axi_awready,
 
     // AXI Write Data Channel Signals
-    input  wire  [`C_M_AXI_LITE_DATA_WIDTH-1:0]   m_axi_wdata,
-    input  wire  [`C_M_AXI_LITE_DATA_WIDTH/8-1:0] m_axi_wstrb,
+    input  wire  [AXI_LITE_DATA_WIDTH-1:0]   m_axi_wdata,
+    input  wire  [AXI_LITE_DATA_WIDTH/8-1:0] m_axi_wstrb,
     input  wire                                   m_axi_wvalid,
     output wire                                   m_axi_wready,
 
@@ -47,7 +49,7 @@ module axilite_noc_bridge (
     output wire                                   m_axi_arready,
 
     // AXI Read Data Channel Signals
-    output  reg [`C_M_AXI_LITE_DATA_WIDTH-1:0]    m_axi_rdata,
+    output  reg [AXI_LITE_DATA_WIDTH-1:0]    m_axi_rdata,
     output  reg [`C_M_AXI_LITE_RESP_WIDTH-1:0]    m_axi_rresp,
     output  reg                                   m_axi_rvalid,
     input  wire                                   m_axi_rready,
@@ -70,8 +72,7 @@ module axilite_noc_bridge (
 `define MSG_TYPE_STORE       2'd2 // Store Request
 
 /* flit fields */
-reg [`C_M_AXI_LITE_ADDR_WIDTH-1:0]      address;
-
+reg [`NOC_DATA_WIDTH-1:0]               msg_address;
 reg [`MSG_LENGTH_WIDTH-1:0]             msg_length;
 reg [`MSG_TYPE_WIDTH-1:0]               msg_type;
 reg [`MSG_MSHRID_WIDTH-1:0]             msg_mshrid;
@@ -150,10 +151,12 @@ begin
 end
 
 /******** Where the magic happens ********/
+assign noc3_ready_out = 1'b1;
+
 assign write_channel_ready = !awaddr_fifo_full && !wdata_fifo_full;
-assign m_axi_awready = write_channel_ready;
-assign m_axi_wready = write_channel_ready;
-assign m_axi_arready = !araddr_fifo_full;
+assign m_axi_awready = write_channel_ready && !type_fifo_full;
+assign m_axi_wready = write_channel_ready && !type_fifo_full;
+assign m_axi_arready = !araddr_fifo_full && !type_fifo_full;
 
 assign axi2noc_msg_type_store = m_axi_awvalid && m_axi_wvalid;
 assign axi2noc_msg_type_load = m_axi_arvalid;
@@ -180,7 +183,9 @@ sync_fifo #(
 assign type_fifo_wval = (axi2noc_msg_type_store ||axi2noc_msg_type_load) && !type_fifo_full;
 assign type_fifo_wdata = (axi2noc_msg_type_store) ? `MSG_TYPE_STORE :
                             (axi2noc_msg_type_load) ? `MSG_TYPE_LOAD : `MSG_TYPE_INVAL;
-assign type_fifo_ren = (flit_state_next == `MSG_STATE_INVALID) && !type_fifo_empty;
+//assign type_fifo_ren = (flit_state == `MSG_STATE_INVALID) && !type_fifo_empty;
+// benefits of using XOR?
+assign type_fifo_ren = (noc_store_done ^ noc_load_done) && !type_fifo_empty;
 
 
 /* fifo for storing addresses */
@@ -201,7 +206,7 @@ sync_fifo #(
 
 assign awaddr_fifo_wval = m_axi_awvalid && write_channel_ready;// && noc2_ready_in;
 assign awaddr_fifo_wdata = m_axi_awaddr;
-assign awaddr_fifo_ren = (flit_state == `MSG_STATE_HEADER_0 && !awaddr_fifo_empty);
+assign awaddr_fifo_ren = (noc_store_done && !awaddr_fifo_empty); // noc_last_data only occurs for stores
 
 
 /* fifo for wdata */
@@ -222,7 +227,7 @@ sync_fifo #(
 
 assign wdata_fifo_wval = m_axi_wvalid && write_channel_ready;// && noc2_ready_in;
 assign wdata_fifo_wdata = m_axi_wdata;
-assign wdata_fifo_ren = (flit_state == `MSG_STATE_HEADER_2 && !wdata_fifo_empty);
+assign wdata_fifo_ren = (noc_store_done && !wdata_fifo_empty); // noc_last_data only occurs for stores
 
 
 /* fifo for read addr */
@@ -241,67 +246,53 @@ sync_fifo #(
 	.reset(rst)
 );
 
-assign araddr_fifo_wval = m_axi_arvalid && noc2_ready_in && ~araddr_fifo_full;
+assign araddr_fifo_wval = m_axi_arvalid && ~araddr_fifo_full; // && noc2_ready_in ;
 assign araddr_fifo_wdata = m_axi_araddr;
-assign araddr_fifo_ren = (flit_state == `MSG_STATE_HEADER_0 && !araddr_fifo_empty);
+assign araddr_fifo_ren = (noc_load_done && !araddr_fifo_empty);
 
 
 /* start the state machine when fifo is not empty and noc is ready 
 * We need to toggle between address and data fifos.
 */
+`define MIN_NOC_DATA_WIDTH      64 // 8 Bytes
+`define NOC_HDR_LEN             3
+`define MSG_STATE_IDLE          2'd0
+`define MSG_STATE_HEADER        2'd1
+`define MSG_STATE_NOC_DATA      2'd2
+
 wire                                    fifo_has_packet;
+wire                                    noc_store_done;
+wire                                    noc_load_done;
+wire [`MIN_NOC_DATA_WIDTH-1:0]          out_data[0:NOC_PAYLOAD_LEN-1];
+reg                                     noc_last_header;
+reg                                     noc_last_data;
+reg [2:0]                               noc_cnt;
 
 assign fifo_has_packet = (type_fifo_out == `MSG_TYPE_STORE) ? (!awaddr_fifo_empty && !wdata_fifo_empty) :
                         (type_fifo_out == `MSG_TYPE_LOAD) ? !araddr_fifo_empty : 1'b0;
 
-/* This just ensures that even if fifo_has_packet is true and 
-flit_state_next is processing a header-state, it doesn't reset to
-MSG_STATE_HEADER_0. One reason to have this is because the FIFOs are FWFT*/                        
-assign is_prev_processing = (flit_state == `MSG_STATE_HEADER_0) ||
-                            (flit_state == `MSG_STATE_HEADER_1) ||
-                            (flit_state == `MSG_STATE_HEADER_2);
+assign noc_store_done = noc_last_data && type_fifo_out == `MSG_TYPE_STORE;
+assign noc_load_done = noc_last_header && type_fifo_out == `MSG_TYPE_LOAD;
 
-always @(*)
-begin
-    if (noc2_ready_in) begin
-        case (type_fifo_out)
-            `MSG_TYPE_STORE: begin
-                flit_state_next = (flit_state == `MSG_STATE_HEADER_0) ? `MSG_STATE_HEADER_1 :
-                                (flit_state == `MSG_STATE_HEADER_1) ? `MSG_STATE_HEADER_2 :
-                                (flit_state == `MSG_STATE_HEADER_2) ? `MSG_STATE_DATA :
-                                (flit_state == `MSG_STATE_DATA) ? `MSG_STATE_INVALID :
-                                (fifo_has_packet && flit_state == `MSG_STATE_INVALID) ?
-                                         `MSG_STATE_HEADER_0 : `MSG_STATE_INVALID;
-            end
+localparam NOC_PAYLOAD_LEN = (AXI_LITE_DATA_WIDTH < `MIN_NOC_DATA_WIDTH) ?
+                        3'b1 : AXI_LITE_DATA_WIDTH/`MIN_NOC_DATA_WIDTH;
 
-            `MSG_TYPE_LOAD: begin
-                flit_state_next = (flit_state == `MSG_STATE_HEADER_0) ? `MSG_STATE_HEADER_1 :
-                                (flit_state == `MSG_STATE_HEADER_1) ? `MSG_STATE_HEADER_2 :
-                                (flit_state == `MSG_STATE_DATA) ? `MSG_STATE_INVALID :
-                                (fifo_has_packet && flit_state == `MSG_STATE_INVALID) ?
-                                         `MSG_STATE_HEADER_0 : `MSG_STATE_INVALID;
-            end
-
-            default: begin
-                flit_state_next = `MSG_STATE_INVALID;
-            end
-
-        endcase
-    end
-end
-
-always @(posedge clk)
-begin
-    if (rst) begin
-        flit_state <= `MSG_STATE_INVALID;
+generate begin
+    genvar k;
+    if (AXI_LITE_DATA_WIDTH < `MIN_NOC_DATA_WIDTH) begin
+        for (k=0; k<`MIN_NOC_DATA_WIDTH/AXI_LITE_DATA_WIDTH; k++)
+        begin: DATA_GEN
+            assign out_data[(k+1)*AXI_LITE_DATA_WIDTH-1 : k*AXI_LITE_DATA_WIDTH] = wdata_fifo_out;
+        end
     end
     else begin
-//        if (flit_state != flit_state_next) begin
-//            $display("axilite_noc_bridge: flit_state == %x", flit_state);
-//        end
-        flit_state <= flit_state_next;
+        for (k=0; k<NOC_PAYLOAD_LEN; k++)
+        begin: DATA_GEN
+            assign out_data[k] = wdata_fifo_out[(k+1)*`MIN_NOC_DATA_WIDTH-1 : k*`MIN_NOC_DATA_WIDTH];
+        end
     end
 end
+endgenerate
 
 /* set defaults for the flit */
 always @(*)
@@ -309,12 +300,14 @@ begin
     case (type_fifo_out)
         `MSG_TYPE_STORE: begin
             msg_type = `MSG_TYPE_NC_STORE_REQ; // axilite peripheral is writing to the memory?
-            msg_length = 2'd3; // 2 extra headers + 1 data
+            msg_length = 2'd2 + NOC_PAYLOAD_LEN; // 2 extra headers + 1 data
+            msg_address = {{`MSG_ADDR_WIDTH-`PHY_ADDR_WIDTH{1'b0}}, awaddr_fifo_out[`PHY_ADDR_WIDTH-1:0]};
         end
 
         `MSG_TYPE_LOAD: begin
             msg_type = `MSG_TYPE_NC_LOAD_REQ; // axilite peripheral is reading from the memory?
             msg_length = 2'd2; // only 2 extra headers
+            msg_address = {{`MSG_ADDR_WIDTH-`PHY_ADDR_WIDTH{1'b0}}, araddr_fifo_out[`PHY_ADDR_WIDTH-1:0]};
         end
         
         default: begin
@@ -323,46 +316,97 @@ begin
     endcase
 end
 
+always @(posedge clk)
+begin
+    if (rst) begin
+        noc_cnt <= 3'b0;
+    end
+    else begin
+        noc_cnt <= (noc_last_header | noc_last_data)  ? 3'b0 :
+                (fifo_has_packet && noc2_ready_in) ? noc_cnt + 1 : noc_cnt;          
+    end
+end
+
 always @(*)
 begin
-    flit[`NOC_DATA_WIDTH-1:0] = {`NOC_DATA_WIDTH{1'b0}};
+    noc_last_header = 1'b0;
+    noc_last_data = 1'b0;
+    if (noc2_ready_in) begin
+        noc_last_header = (flit_state == `MSG_STATE_HEADER &&
+                                    noc_cnt == `NOC_HDR_LEN-1) ? 1'b1 : 1'b0;
+        noc_last_data = (flit_state == `MSG_STATE_NOC_DATA &&
+                                    noc_cnt == NOC_PAYLOAD_LEN-1) ? 1'b1 : 1'b0;
+    end
+end
+
+always @(posedge clk)
+begin
+    if (rst) begin
+        flit_state <= `MSG_STATE_IDLE;
+    end
+    else begin
+        case (flit_state)
+            `MSG_STATE_IDLE: begin
+                if (fifo_has_packet && noc2_ready_in)
+                    flit_state <= `MSG_STATE_HEADER;
+            end
+
+            `MSG_STATE_HEADER: begin
+                if (noc_last_header && type_fifo_out == `MSG_TYPE_STORE)
+                    flit_state <= `MSG_STATE_NOC_DATA;
+                else if (noc_load_done)
+                    flit_state <= `MSG_STATE_IDLE;
+            end
+
+            `MSG_STATE_NOC_DATA: begin
+                if (noc_store_done)
+                    flit_state <= `MSG_STATE_IDLE;
+            end
+        endcase
+    end
+end
+
+always @(*)
+begin
     msg_mshrid = {`MSG_MSHRID_WIDTH{1'b0}};
     msg_options_1 = {`MSG_OPTIONS_1_WIDTH{1'b0}};
     msg_options_2 = 16'b0;
     msg_options_3 = 30'b0;
     case (flit_state)
-        `MSG_STATE_HEADER_0: begin
-            flit[`MSG_DST_CHIPID] = dest_chipid;
-            flit[`MSG_DST_X] = dest_xpos;
-            flit[`MSG_DST_Y] = dest_ypos;
-            flit[`MSG_DST_FBITS] = dest_fbits; // towards memory?
-            flit[`MSG_LENGTH] = msg_length;
-            flit[`MSG_TYPE] = msg_type;
-            flit[`MSG_MSHRID] = msg_mshrid;
-            flit[`MSG_OPTIONS_1] = msg_options_1;
-            flit_ready = 1'b1;
+        `MSG_STATE_HEADER: begin
+            case (noc_cnt)
+                3'b000: begin
+                    flit[`MSG_DST_CHIPID] = dest_chipid;
+                    flit[`MSG_DST_X] = dest_xpos;
+                    flit[`MSG_DST_Y] = dest_ypos;
+                    flit[`MSG_DST_FBITS] = dest_fbits; // towards memory?
+                    flit[`MSG_LENGTH] = msg_length;
+                    flit[`MSG_TYPE] = msg_type;
+                    flit[`MSG_MSHRID] = msg_mshrid;
+                    flit[`MSG_OPTIONS_1] = msg_options_1;
+                    flit_ready = 1'b1;
+                end
 
-            //flit[`NOC_DATA_WIDTH-1:0] = 64'habcdabcdabcdabcd;
+                3'b001: begin
+                    flit[`MSG_ADDR_] = msg_address;
+                    flit[`MSG_OPTIONS_2_] = msg_options_2;
+                    flit[`MSG_DATA_SIZE_] = `MSG_DATA_SIZE_64B;
+                    flit_ready = 1'b1;                  
+                end
+
+                3'b010: begin
+                    flit[`MSG_SRC_CHIPID_] = src_chipid;
+                    flit[`MSG_SRC_X_] = src_xpos;
+                    flit[`MSG_SRC_Y_] = src_ypos;
+                    flit[`MSG_SRC_FBITS_] = src_fbits;
+                    flit[`MSG_OPTIONS_3_] = msg_options_3;
+                    flit_ready = 1'b1;
+                end
+            endcase
         end
 
-        `MSG_STATE_HEADER_1: begin
-            flit[`MSG_ADDR_] = {{`MSG_ADDR_WIDTH-`PHY_ADDR_WIDTH{1'b0}}, awaddr_fifo_out[`PHY_ADDR_WIDTH-1:0]};
-            flit[`MSG_OPTIONS_2_] = msg_options_2;
-            flit[`MSG_DATA_SIZE_] = `MSG_DATA_SIZE_1B;
-            flit_ready = 1'b1;
-        end
-
-        `MSG_STATE_HEADER_2: begin
-            flit[`MSG_SRC_CHIPID_] = src_chipid;
-            flit[`MSG_SRC_X_] = src_xpos;
-            flit[`MSG_SRC_Y_] = src_ypos;
-            flit[`MSG_SRC_FBITS_] = src_fbits;
-            flit[`MSG_OPTIONS_3_] = msg_options_3;
-            flit_ready = 1'b1;
-        end
-
-        `MSG_STATE_DATA: begin
-            flit[`NOC_DATA_WIDTH-1:0] = wdata_fifo_out;
+        `MSG_STATE_NOC_DATA: begin
+            flit[`NOC_DATA_WIDTH-1:0] = out_data[noc_cnt]; //wdata_fifo_out;
             flit_ready = 1'b1;
         end
 

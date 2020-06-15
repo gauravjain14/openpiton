@@ -1250,6 +1250,12 @@ noc_axilite_peripheral_wrapper noc_axilite_peripheral_wrapper(
     .src_chipid         ( {1'b1, {(`NOC_CHIPID_WIDTH-1){1'b0}}} ),
     .src_xpos           ( `NOC_X_WIDTH'd%s                      ),
     .src_ypos           ( `NOC_Y_WIDTH'd0                       ),
+    .src_fbits          ( `NOC_FBITS_WIDTH'd0                   ), // does it matter?
+    .dest_chipid        ( {1'b1, {(`NOC_CHIPID_WIDTH-1){1'b0}}} ),
+    .dest_xpos          ( `NOC_X_WIDTH'd0                       ),
+    .dest_ypos          ( `NOC_Y_WIDTH'd0                       ),
+    .dest_fbits         ( `NOC_FBITS_WIDTH'd0                   ),
+
     .noc2_valid_in      (buf_axilite_peripheral_noc2_valid),
     .noc2_data_in       (buf_axilite_peripheral_noc2_data),
     .noc2_ready_out     (axilite_peripheral_buf_noc2_ready),
