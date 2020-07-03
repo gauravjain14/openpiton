@@ -56,10 +56,12 @@ reg [AXILITE_ADDR_WIDTH-1:0]                rd_addr;
 
 wire										write_ready;
 wire                                        start_read;
+wire [6:0]                                  offset;
 
 localparam addr_base = 'h80000000;
-assign start_read = 1'b0; // (gen_write_f == STOP_WRITE);
+assign start_read = (gen_write_f == STOP_WRITE);
 assign m_axi_rready = 1'b1; // always ready
+assign offset = AXILITE_DATA_WIDTH >> 3;
 
 integer file;
 initial begin
@@ -128,8 +130,8 @@ begin
 
         GEN_READ: begin
             if (rd_addr < max_wr_addr) begin
-                rd_valid = m_axi_arready;
-                rd_addr = m_axi_araddr + (1'b1 & m_axi_arready);
+                rd_valid = 1'b1;
+                rd_addr = m_axi_araddr + (offset & {7{m_axi_arready}});
             end
         end
     endcase
@@ -165,7 +167,6 @@ begin
     end
 end
 
-/* take two cases - backpressure and no backpressure*/
 always @(*)
 begin
 	addr_valid = m_axi_awvalid;
@@ -175,8 +176,8 @@ begin
         RESET_WRITE: begin
             addr_valid = 1'b0;
             data_valid = 1'b0;
-            addr_counter = m_axi_awaddr;
-            data_counter = m_axi_wdata;
+            addr_counter = addr_base;
+            data_counter = {AXILITE_DATA_WIDTH{1'b0}};
         end
 
 		HOLD_WRITE: begin
@@ -188,7 +189,7 @@ begin
 			addr_valid = 1'b1;
 			data_valid = 1'b1;
             max_wr_addr = addr_counter;
-			addr_counter = m_axi_awaddr + 1'b1;
+			addr_counter = m_axi_awaddr + offset; // 1'b1; byte-addressable
 			data_counter = m_axi_wdata + 1'b1;
 		end
 
@@ -212,8 +213,10 @@ begin
     else begin
         m_axi_awvalid <= addr_valid;
         m_axi_wvalid <= data_valid;
-        m_axi_awaddr <= addr_counter;
-        m_axi_wdata <= data_counter;
+        if (m_axi_awready && m_axi_wready) begin
+            m_axi_awaddr <= addr_counter;
+            m_axi_wdata <= data_counter;
+        end
     end
 end
 

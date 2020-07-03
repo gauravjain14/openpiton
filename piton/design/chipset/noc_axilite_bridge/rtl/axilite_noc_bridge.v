@@ -38,8 +38,8 @@ module axilite_noc_bridge #(
     output wire                                   m_axi_awready,
 
     // AXI Write Data Channel Signals
-    input  wire  [AXI_LITE_DATA_WIDTH-1:0]   m_axi_wdata,
-    input  wire  [AXI_LITE_DATA_WIDTH/8-1:0] m_axi_wstrb,
+    input  wire  [AXI_LITE_DATA_WIDTH-1:0]        m_axi_wdata,
+    input  wire  [AXI_LITE_DATA_WIDTH/8-1:0]      m_axi_wstrb,
     input  wire                                   m_axi_wvalid,
     output wire                                   m_axi_wready,
 
@@ -49,7 +49,7 @@ module axilite_noc_bridge #(
     output wire                                   m_axi_arready,
 
     // AXI Read Data Channel Signals
-    output  reg [AXI_LITE_DATA_WIDTH-1:0]    m_axi_rdata,
+    output  reg [AXI_LITE_DATA_WIDTH-1:0]         m_axi_rdata,
     output  reg [`C_M_AXI_LITE_RESP_WIDTH-1:0]    m_axi_rresp,
     output  reg                                   m_axi_rvalid,
     input  wire                                   m_axi_rready,
@@ -150,7 +150,72 @@ begin
     end */
 end
 
+/* Dump store addr and data to file. */
+integer file3;
+initial begin
+    file3 = $fopen("axilite_noc2_store.log", "w");
+end
+always @(posedge clk)
+begin
+    if ((type_fifo_out == `MSG_TYPE_STORE) && noc2_valid_out && noc2_ready_in)
+    begin
+        $fwrite(file3, "noc2_data_out %064x\n", noc2_data_out);
+        $fflush(file3);
+    end
+end
+
+/* Dump store addr and data to file. */
+integer file2;
+initial begin
+    file2 = $fopen("axilite_noc3_load.log", "w");
+end
+always @(posedge clk)
+begin
+    if ((type_fifo_out == `MSG_TYPE_LOAD) && noc3_valid_in && noc3_ready_out)
+    begin
+        $fwrite(file2, "noc3_data_in %064x\n", noc3_data_in);
+        $fflush(file2);
+    end
+end
+
+/* Dump axi read data to file. */
+integer file4;
+initial begin
+    file4 = $fopen("axilite_read_data.log", "w");
+end
+always @(posedge clk)
+begin
+    if (m_axi_rvalid && m_axi_rready)
+    begin
+        $fwrite(file4, "rdata %x\n", m_axi_rdata);
+        $fflush(file4);
+    end
+end
+
 /******** Where the magic happens ********/
+noc_response_axilite #(
+    .AXI_LITE_DATA_WIDTH(AXI_LITE_DATA_WIDTH)
+) noc_response_axilite(
+    .clk(clk),
+    .rst(rst),
+    .noc_valid_in(noc3_valid_in),
+    .noc_data_in(noc3_data_in),
+    .noc_ready_out(noc3_ready_out),
+    .noc_valid_out(),
+    .noc_data_out(),
+    .noc_ready_in(1'b1),
+    .m_axi_rdata(m_axi_rdata),
+    .m_axi_rresp(m_axi_rresp),
+    .m_axi_rvalid(m_axi_rvalid),
+    .m_axi_rready(m_axi_rready),
+    .m_axi_bresp(),
+    .m_axi_bvalid(),
+    .m_axi_bready(1'b1),
+    .w_reqbuf_size(),
+    .r_reqbuf_size()
+);
+
+
 assign noc3_ready_out = 1'b1;
 
 assign write_channel_ready = !awaddr_fifo_full && !wdata_fifo_full;
@@ -204,7 +269,7 @@ sync_fifo #(
 	.reset(rst)
 );
 
-assign awaddr_fifo_wval = m_axi_awvalid && write_channel_ready;// && noc2_ready_in;
+assign awaddr_fifo_wval = m_axi_awvalid && m_axi_awready; //write_channel_ready;// && noc2_ready_in;
 assign awaddr_fifo_wdata = m_axi_awaddr;
 assign awaddr_fifo_ren = (noc_store_done && !awaddr_fifo_empty); // noc_last_data only occurs for stores
 
@@ -225,7 +290,7 @@ sync_fifo #(
 	.reset(rst)
 );
 
-assign wdata_fifo_wval = m_axi_wvalid && write_channel_ready;// && noc2_ready_in;
+assign wdata_fifo_wval = m_axi_wvalid && m_axi_wready; // write_channel_ready;// && noc2_ready_in;
 assign wdata_fifo_wdata = m_axi_wdata;
 assign wdata_fifo_ren = (noc_store_done && !wdata_fifo_empty); // noc_last_data only occurs for stores
 
@@ -246,7 +311,7 @@ sync_fifo #(
 	.reset(rst)
 );
 
-assign araddr_fifo_wval = m_axi_arvalid && ~araddr_fifo_full; // && noc2_ready_in ;
+assign araddr_fifo_wval = m_axi_arvalid && m_axi_arready;
 assign araddr_fifo_wdata = m_axi_araddr;
 assign araddr_fifo_ren = (noc_load_done && !araddr_fifo_empty);
 
@@ -294,6 +359,8 @@ generate begin
 end
 endgenerate
 
+reg [2:0]           msg_data_size;
+
 /* set defaults for the flit */
 always @(*)
 begin
@@ -301,17 +368,20 @@ begin
         `MSG_TYPE_STORE: begin
             msg_type = `MSG_TYPE_NC_STORE_REQ; // axilite peripheral is writing to the memory?
             msg_length = 2'd2 + NOC_PAYLOAD_LEN; // 2 extra headers + 1 data
+            msg_data_size = `MSG_DATA_SIZE_64B; // fix it for now
             msg_address = {{`MSG_ADDR_WIDTH-`PHY_ADDR_WIDTH{1'b0}}, awaddr_fifo_out[`PHY_ADDR_WIDTH-1:0]};
         end
 
         `MSG_TYPE_LOAD: begin
             msg_type = `MSG_TYPE_NC_LOAD_REQ; // axilite peripheral is reading from the memory?
             msg_length = 2'd2; // only 2 extra headers
+            msg_data_size = `MSG_DATA_SIZE_64B; // fix it for now. 
             msg_address = {{`MSG_ADDR_WIDTH-`PHY_ADDR_WIDTH{1'b0}}, araddr_fifo_out[`PHY_ADDR_WIDTH-1:0]};
         end
         
         default: begin
             msg_length = 2'b0;
+            msg_data_size = `MSG_DATA_SIZE_8B;
         end
     endcase
 end
@@ -333,7 +403,7 @@ begin
     noc_last_data = 1'b0;
     if (noc2_ready_in) begin
         noc_last_header = (flit_state == `MSG_STATE_HEADER &&
-                                    noc_cnt == `NOC_HDR_LEN-1) ? 1'b1 : 1'b0;
+                                    noc_cnt == `NOC_HDR_LEN) ? 1'b1 : 1'b0;
         noc_last_data = (flit_state == `MSG_STATE_NOC_DATA &&
                                     noc_cnt == NOC_PAYLOAD_LEN-1) ? 1'b1 : 1'b0;
     end
@@ -375,7 +445,7 @@ begin
     case (flit_state)
         `MSG_STATE_HEADER: begin
             case (noc_cnt)
-                3'b000: begin
+                3'b001: begin
                     flit[`MSG_DST_CHIPID] = dest_chipid;
                     flit[`MSG_DST_X] = dest_xpos;
                     flit[`MSG_DST_Y] = dest_ypos;
@@ -387,14 +457,14 @@ begin
                     flit_ready = 1'b1;
                 end
 
-                3'b001: begin
+                3'b010: begin
                     flit[`MSG_ADDR_] = msg_address;
                     flit[`MSG_OPTIONS_2_] = msg_options_2;
-                    flit[`MSG_DATA_SIZE_] = `MSG_DATA_SIZE_64B;
+                    flit[`MSG_DATA_SIZE_] = msg_data_size;
                     flit_ready = 1'b1;                  
                 end
 
-                3'b010: begin
+                3'b011: begin
                     flit[`MSG_SRC_CHIPID_] = src_chipid;
                     flit[`MSG_SRC_X_] = src_xpos;
                     flit[`MSG_SRC_Y_] = src_ypos;
