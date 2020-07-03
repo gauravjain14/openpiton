@@ -1,12 +1,20 @@
 `include "define.tmp.h"
 
-module noc_axilite_peripheral_wrapper(
+module noc_axilite_peripheral_wrapper #(
+    parameter AXI_LITE_DATA_WIDTH = 512
+) (
     input wire                                    clk,
     input wire                                    rst_n,
 
     input wire [`MSG_SRC_CHIPID_WIDTH-1:0]        src_chipid,
     input wire [`MSG_SRC_X_WIDTH-1:0]             src_xpos,
     input wire [`MSG_SRC_Y_WIDTH-1:0]             src_ypos,
+    input wire [`MSG_SRC_FBITS_WIDTH-1:0]         src_fbits,
+
+    input wire [`MSG_DST_CHIPID_WIDTH-1:0]        dest_chipid,
+    input wire [`MSG_DST_X_WIDTH-1:0]             dest_xpos,
+    input wire [`MSG_DST_Y_WIDTH-1:0]             dest_ypos,
+    input wire [`MSG_DST_FBITS_WIDTH-1:0]         dest_fbits,    
 
     input wire                                    noc2_valid_in,
     input wire [`NOC_DATA_WIDTH-1:0]              noc2_data_in,
@@ -29,25 +37,22 @@ wire                                         reset;
 wire [`C_M_AXI_LITE_ADDR_WIDTH-1:0]          axi_awaddr;
 wire                                         axi_awvalid;
 wire                                         axi_awready;
-wire [`NOC_DATA_WIDTH-1:0]                   axi_wdata;
+wire [AXI_LITE_DATA_WIDTH-1:0]               axi_wdata;
 wire                                         axi_wvalid;
 wire                                         axi_wready;
 wire [`C_M_AXI_LITE_ADDR_WIDTH-1:0]          axi_araddr;
 wire                                         axi_arvalid;
 wire                                         axi_arready;
+wire                                         axi_rvalid;
+wire                                         axi_rready;
+wire [AXI_LITE_DATA_WIDTH-1:0]               axi_rdata;
 
-wire [`MSG_SRC_FBITS_WIDTH-1:0]              src_fbits;
-
-wire [`MSG_DST_CHIPID_WIDTH-1:0]             dest_chipid;
-wire [`MSG_DST_X_WIDTH-1:0]                  dest_xpos;
-wire [`MSG_DST_Y_WIDTH-1:0]                  dest_ypos;
-wire [`MSG_DST_FBITS_WIDTH-1:0]              dest_fbits;
 
 assign reset = ~rst_n;
 
 axilite_master_test #(
     .AXILITE_ADDR_WIDTH(`C_M_AXI_LITE_ADDR_WIDTH),
-    .AXILITE_DATA_WIDTH(`NOC_DATA_WIDTH)
+    .AXILITE_DATA_WIDTH(AXI_LITE_DATA_WIDTH)
 ) axilite_master (
     .clk(clk),
     .rst(reset),
@@ -59,17 +64,15 @@ axilite_master_test #(
     .m_axi_wready(axi_wready),
     .m_axi_araddr(axi_araddr),
     .m_axi_arvalid(axi_arvalid),
-    .m_axi_arready(axi_arready)
+    .m_axi_arready(axi_arready),
+    .m_axi_rvalid(axi_rvalid),
+    .m_axi_rdata(axi_rdata),
+    .m_axi_rready(axi_rready)
 );
 
-
-assign dest_chipid = {{1'b1, 13'b0}};
-assign dest_xpos = {8{1'b0}};
-assign dest_ypos = {8{1'b0}};
-assign dest_fbits = `NOC_FBITS_MEM; // {`FINAL_BITS{1'b1}};
-assign src_fbits = {`FINAL_BITS{1'b1}}; //`NOC_FBITS_L2; // don't think it matters here, right?
-
-axilite_noc_bridge axilite_noc_bridge (
+axilite_noc_bridge #(
+    .AXI_LITE_DATA_WIDTH(AXI_LITE_DATA_WIDTH)
+) axilite_noc_bridge (
     .clk                    (clk),
     .rst                    (reset),
 
@@ -112,15 +115,15 @@ axilite_noc_bridge axilite_noc_bridge (
     .m_axi_wready           (axi_wready),
 
     //read address channel
-    .m_axi_araddr           (0),
-    .m_axi_arvalid          (0),
-    .m_axi_arready          (),
+    .m_axi_araddr           (axi_araddr),
+    .m_axi_arvalid          (axi_arvalid),
+    .m_axi_arready          (axi_arready),
 
     //read data channel
-    .m_axi_rdata            (),
+    .m_axi_rdata            (axi_rdata),
     .m_axi_rresp            (),
-    .m_axi_rvalid           (),
-    .m_axi_rready           (0),
+    .m_axi_rvalid           (axi_rvalid),
+    .m_axi_rready           (axi_rready),
 
     //write response channel
     .m_axi_bresp            (),

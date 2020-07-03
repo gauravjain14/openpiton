@@ -52,16 +52,16 @@ module uart_top (
     input [`NOC_Y_WIDTH-1:0]                y_id,
     // receive request/send response
     input                                   xbar_uart_noc2_valid,
-    input [`NOC_DATA_WIDTH-1:0]             xbar_uart_noc2_data,     
+    input [`NOC_DATA_WIDTH-1:0]             xbar_uart_noc2_data,    
     output                                  uart_xbar_noc2_ready,
 
     output                                  uart_xbar_noc3_valid,
-    output [`NOC_DATA_WIDTH-1:0]            uart_xbar_noc3_data,  
+    output [`NOC_DATA_WIDTH-1:0]            uart_xbar_noc3_data, 
     input                                   xbar_uart_noc3_ready,
     
     // send request/receive response
     output                                  uart_xbar_noc2_valid,
-    output [`NOC_DATA_WIDTH-1:0]            uart_xbar_noc2_data,  
+    output [`NOC_DATA_WIDTH-1:0]            uart_xbar_noc2_data,
     input                                   xbar_uart_noc2_ready,
 
     input                                   xbar_uart_noc3_valid,
